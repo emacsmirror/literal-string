@@ -58,18 +58,45 @@
 Result depends on syntax table's string quote character."
   (nth 3 (syntax-ppss)))
 
+(defvar literal-string--string-quote-regex "[^\\\\]\"")
+
+(defun literal-string--at-quote? ()
+  "True if point at at string quote"
+  (save-excursion
+    (backward-char 1)
+    (looking-at-p literal-string--string-quote-regex)))
+
 (defun literal-string--region ()
   "Return start and end markers of current literal string.
 `nil` if point is not at or in a string literal"
-  (when (literal-string--inside-string?)
-    (save-excursion
-      (search-forward-regexp "[^\\\\]\"")
+  (save-excursion
+    (cond
+     ((and (not (literal-string--inside-string?))
+           (literal-string--at-quote?))
+      ;; at start of quoted string
+      (forward-char 1)
+      (let ((start (point-marker)))
+        (search-forward-regexp literal-string--string-quote-regex)
+        (backward-char 1)
+        (list start (point-marker))))
+     ((and (literal-string--inside-string?)
+           (not (literal-string--at-quote?)))
+      ;; somewhere in quoted string
+      (search-forward-regexp literal-string--string-quote-regex)
       (backward-char 1)
       (let ((end (point-marker)))
-        (search-backward-regexp "[^\\\\]\"")
+        (search-backward-regexp literal-string--string-quote-regex)
         (forward-char 2)
         (let ((start (point-marker)))
-          (list start end))))))
+          (list start end))))
+     ((and (literal-string--inside-string?)
+           (literal-string--at-quote?))
+      ;; at end of quoted string
+      (let ((end (point-marker)))
+        (search-backward-regexp literal-string--string-quote-regex)
+        (forward-char 2)
+        (list end (point-marker)))))))
+
 (defun literal-string--docstring-indent-level ()
   "Find indent level of current buffer after first line."
   (save-excursion
@@ -140,14 +167,14 @@ Removes docstring indentation"
   (interactive)
   (require 'markdown-mode)
   (if-let (region (literal-string--region))
-    (let ((edit-buffer (get-buffer-create (format "*Edit Literal String <%s>*" (buffer-name)))))
-      (apply #'copy-to-buffer edit-buffer region)
-      (switch-to-buffer edit-buffer)
-      (markdown-mode) ; first - changing major mode clears local vars!
-      (setq literal-string-source-region region
-            literal-string-source-indent-level (literal-string--docstring-deindent))
-      (literal-string--unescape)
-      (literal-string-editing-mode t))
+      (let ((edit-buffer (get-buffer-create (format "*Edit Literal String <%s>*" (buffer-name)))))
+        (apply #'copy-to-buffer edit-buffer region)
+        (switch-to-buffer edit-buffer)
+        (markdown-mode) ; first - changing major mode clears local vars!
+        (setq literal-string-source-region region
+              literal-string-source-indent-level (literal-string--docstring-deindent))
+        (literal-string--unescape)
+        (literal-string-editing-mode t))
     (user-error "Not at a string literal")))
 
 (defun literal-string-edit-string-exit ()
@@ -156,16 +183,16 @@ Replaces content of original string literal with content of
 buffer."
   (interactive)
   (if-let (region literal-string-source-region) ; copy buffer-local var
-    (let ((string-buffer (current-buffer))
-          (source-buffer (marker-buffer (car region))))
-      (literal-string--escape)
-      (literal-string--docstring-reindent)
-      (switch-to-buffer source-buffer)
-      (apply #'delete-region region)
-      (insert-buffer-substring string-buffer)
-      (set-marker (car region) nil nil)
-      (set-marker (cadr region) nil nil)
-      (kill-buffer string-buffer))
+      (let ((string-buffer (current-buffer))
+            (source-buffer (marker-buffer (car region))))
+        (literal-string--escape)
+        (literal-string--docstring-reindent)
+        (switch-to-buffer source-buffer)
+        (apply #'delete-region region)
+        (insert-buffer-substring string-buffer)
+        (set-marker (car region) nil nil)
+        (set-marker (cadr region) nil nil)
+        (kill-buffer string-buffer))
     (user-error "Not editing a string literal")))
 
 (defun literal-string-edit-string-abort ()
