@@ -5,7 +5,7 @@
 ;; Author: Joost Diepenmaat <joost@zeekat.nl>
 ;; Keywords: lisp, tools, docs
 ;; URL: https://github.com/joodie/literal-string-mode/
-;; Package-Requires: ((markdown-mode "2.0") (emacs "25"))
+;; Package-Requires: ((emacs "25") (edit-indirect "0.1.4"))
 ;; Package-Version: 0.1
 
 ;; Contributors:
@@ -119,25 +119,22 @@ Returns the amount of indentation removed."
       (indent-rigidly (point-min) (point-max) (- level))
       level)))
 
-(defvar-local literal-string-source-indent-level nil)
-(defvar-local literal-string-source-region nil)
-
-(defun literal-string--docstring-reindent ()
+(defun literal-string--docstring-reindent (indent-level)
   "Re-indent literal string editing buffer.
 Uses indent level removed by `literal-string--docstring-deindent`."
-  (when-let (level literal-string-source-indent-level)
-    (when (not (zerop level))
-      (save-excursion
-        (goto-char (point-min))
-        (forward-line)
-        (when (not (eobp))
-          (indent-rigidly (point) (point-max) level))))))
+  (when (and indent-level
+             (not (zerop indent-level)))
+    (save-excursion
+      (goto-char (point-min))
+      (forward-line)
+      (when (not (eobp))
+        (indent-rigidly (point) (point-max) indent-level)))))
 
 (defun literal-string--replace-all (from to)
-  "Replace all occurences of `FROM` TO `to`."
+  "Replace all occurences of `FROM` to `TO` in buffer."
   (save-excursion
     (goto-char (point-min))
-    (while (search-forward from nil t)
+    (while (search-forward from (point-max) t)
       (replace-match to t t))))
 
 (defun literal-string--unescape ()
@@ -160,50 +157,40 @@ Uses indent level removed by `literal-string--docstring-deindent`."
 `nil` means do not set `fill-column`"
   :type 'integer)
 
+(defun literal-string--prepare-buffer ()
+  (literal-string--unescape)
+  (let ((indent-level) (literal-string--docstring-deindent))
+    (add-hook 'edit-indirect-before-commit-hook
+              (lambda ()
+                (literal-string--cleanup-region indent-level))
+              nil t)))
+
+(defun literal-string--cleanup-region (indent-level)
+  (literal-string--escape)
+  (literal-string--docstring-reindent indent-level))
+
 ;;;###autoload
 (defun literal-string-edit-string ()
   "Indent current string literal.
-Removes docstring indentation"
+  Removes docstring indentation.
+
+        \"some quoted text\"
+
+  Foo bar"
   (interactive)
-  (require 'markdown-mode)
+  (require 'edit-indirect)
   (if-let (region (literal-string--region))
-      (let ((edit-buffer (get-buffer-create (format "*Edit Literal String <%s>*" (buffer-name)))))
-        (apply #'copy-to-buffer edit-buffer region)
-        (switch-to-buffer edit-buffer)
-        (markdown-mode) ; first - changing major mode clears local vars!
-        (setq literal-string-source-region region
-              literal-string-source-indent-level (literal-string--docstring-deindent))
-        (literal-string--unescape)
-        (literal-string-editing-mode t))
+      (progn
+        (add-hook 'edit-indirect-after-creation-hook
+                  #'literal-string--prepare-buffer
+                  nil
+                  t)
+        (edit-indirect-region (car region) (cadr region) t))
     (user-error "Not at a string literal")))
-
-(defun literal-string-edit-string-exit ()
-  "Quit editing the current literal string bufffer.
-Replaces content of original string literal with content of
-buffer."
-  (interactive)
-  (if-let (region literal-string-source-region) ; copy buffer-local var
-      (let ((string-buffer (current-buffer))
-            (source-buffer (marker-buffer (car region))))
-        (literal-string--escape)
-        (literal-string--docstring-reindent)
-        (switch-to-buffer source-buffer)
-        (apply #'delete-region region)
-        (insert-buffer-substring string-buffer)
-        (set-marker (car region) nil nil)
-        (set-marker (cadr region) nil nil)
-        (kill-buffer string-buffer))
-    (user-error "Not editing a string literal")))
-
-(defun literal-string-edit-string-abort ()
-  "Quit and discard edits to the current literal string buffer."
-  (interactive)
-  (when literal-string-editing-mode
-    (kill-buffer (current-buffer))))
 
 (defvar literal-string-mode-keymap
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c '") 'literal-string-edit-string)
+    (define-key map (kbd "C-c \"") 'literal-string-edit-string)
     map))
 
 ;;;###autoload
@@ -211,28 +198,10 @@ buffer."
   "A minor mode for editing literal (documentation) strings in
 source code.
 
-Provides support for editing strings formatted in markdown,
-automatic (un)escaping of quotes and docstring indentation."
+Provides support for editing strings, automatic (un)escaping of
+quotes and docstring indentation."
   :lighter " str"
   :keymap literal-string-mode-keymap)
-
-(defvar literal-string-editing-mode-keymap
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c '") 'literal-string-edit-string-exit)
-    (define-key map (kbd "C-c C-k") 'literal-string-edit-string-abort)
-    map))
-
-;;;###autoload
-(define-minor-mode literal-string-editing-mode
-  "Minor mode used in edit buffer by `literal-string-mode`."
-  :lighter " edit-str"
-  :keymap literal-string-editing-mode-keymap
-  (setq-local header-line-format
-              (substitute-command-keys
-               "Edit, then exit with `\\[literal-string-edit-string-exit]' or abort with \
-`\\[literal-string-edit-string-abort]'"))
-  (when literal-string-fill-column
-    (set-fill-column literal-string-fill-column)))
 
 (provide 'literal-string)
 
